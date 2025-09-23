@@ -90,7 +90,7 @@ class RaspberryPiSystem:
                 print(f"Image uploaded successfully: {os.path.basename(image_path)}")
                 return True
             else:
-                print(f"Image upload failed: {response.status_code}")
+                print(f"Image upload failed: {response.status_code} - {response.text}")
                 return False
         except Exception as e:
             print(f"Image upload error: {e}")
@@ -128,7 +128,6 @@ class RaspberryPiSystem:
 
                 # Check if the image is completely black
                 if frame.sum() == 0:
-                    print("Captured image is completely black. Skipping save.")
                     time.sleep(interval)
                     continue
 
