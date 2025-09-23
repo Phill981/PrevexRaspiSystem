@@ -10,7 +10,7 @@ import glob
 import hashlib
 
 class RaspberryPiSystem:
-    def __init__(self, device_id=None, api_url="http://localhost:8000", temp_dir="temp_storage"):
+    def __init__(self, device_id=None, api_url="http://c4kgwso4ggcgk44080kc4ooo.157.90.23.234.sslip.io", temp_dir="temp_storage"):
         self.device_id = device_id or self._generate_device_id()
         self.api_url = api_url
         self.temp_dir = temp_dir
