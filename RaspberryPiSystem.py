@@ -15,6 +15,10 @@ class RaspberryPiSystem:
         self.api_url = api_url
         self.temp_dir = temp_dir
         self.last_heartbeat = None
+        self.is_connected = False
+        self.reconnect_attempts = 0
+        self.max_reconnect_attempts = 10
+        self.reconnect_delay = 5  # seconds
         
         # Create temp directory
         os.makedirs(self.temp_dir, exist_ok=True)
@@ -61,14 +65,17 @@ class RaspberryPiSystem:
         except Exception as e:
             print(f"Could not contact server for cleanup: {e}")
     
-    def send_heartbeat(self):
-        """Send heartbeat to API to indicate device is online"""
+    def send_heartbeat(self, status="online"):
+        """Send heartbeat to API to indicate device status"""
         try:
             response = requests.post(f"{self.api_url}/api/heartbeat", 
-                                  json={"device_id": self.device_id, "status": "online"})
+                                  json={"device_id": self.device_id, "status": status})
             if response.status_code == 200:
                 self.last_heartbeat = datetime.now()
-                print(f"Heartbeat sent successfully at {self.last_heartbeat}")
+                if status == "online":
+                    print(f"Heartbeat sent successfully at {self.last_heartbeat}")
+                else:
+                    print(f"Status update sent: {status} at {self.last_heartbeat}")
                 return True
             else:
                 print(f"Heartbeat failed: {response.status_code}")
@@ -96,35 +103,84 @@ class RaspberryPiSystem:
             print(f"Image upload error: {e}")
             return False
     
+    def attempt_reconnection(self, device):
+        """Attempt to reconnect to video source"""
+        self.reconnect_attempts += 1
+        print(f"Attempting to reconnect to {device} (attempt {self.reconnect_attempts}/{self.max_reconnect_attempts})")
+        
+        # Send disconnected status to backend
+        self.send_heartbeat("disconnected")
+        
+        if self.reconnect_attempts >= self.max_reconnect_attempts:
+            print(f"Max reconnection attempts reached. Stopping reconnection attempts.")
+            return None
+        
+        # Wait before attempting reconnection
+        time.sleep(self.reconnect_delay)
+        
+        # Try to open the video capture
+        cap = cv2.VideoCapture(device)
+        if cap.isOpened():
+            print(f"Successfully reconnected to {device}")
+            self.is_connected = True
+            self.reconnect_attempts = 0
+            self.send_heartbeat("online")
+            return cap
+        else:
+            print(f"Failed to reconnect to {device}")
+            cap.release()
+            return None
+    
     def capture_screen(self, device="/dev/video0", interval=5, output_dir="screenshots"):
         """
         Captures a screen from a video device at a specified interval.
         The function checks if the captured image is completely black.
         If it is, the image is not saved.
+        Handles video source disconnections with automatic reconnection attempts.
         """
         # Create the output directory if it doesn't exist
         os.makedirs(output_dir, exist_ok=True)
 
-        # Initialize video capture from the specified device
-        cap = cv2.VideoCapture(device)
-        if not cap.isOpened():
-            print(f"Error: Could not open video device {device}.")
-            return
-
         print("Screen capture process started. Press Ctrl+C to stop.")
         
         # Send initial heartbeat
-        self.send_heartbeat()
+        self.send_heartbeat("online")
+        
+        cap = None
         
         try:
             while True:
+                # Initialize or reinitialize video capture
+                if cap is None or not cap.isOpened():
+                    cap = cv2.VideoCapture(device)
+                    if not cap.isOpened():
+                        print(f"Error: Could not open video device {device}.")
+                        cap = self.attempt_reconnection(device)
+                        if cap is None:
+                            # If reconnection failed, continue the loop to try again
+                            time.sleep(interval)
+                            continue
+                    else:
+                        self.is_connected = True
+                        self.reconnect_attempts = 0
+                        print(f"Successfully connected to {device}")
+                
                 # Read a frame from the video capture device
                 ret, frame = cap.read()
                 
                 # Check if the frame was read successfully
                 if not ret:
-                    print("Error: Could not read a frame. Exiting.")
-                    break
+                    print("Error: Could not read a frame. Video source may be disconnected.")
+                    self.is_connected = False
+                    cap.release()
+                    cap = None
+                    # Try to reconnect
+                    cap = self.attempt_reconnection(device)
+                    if cap is None:
+                        time.sleep(interval)
+                        continue
+                    else:
+                        continue
 
                 # Check if the image is completely black
                 if frame.sum() == 0:
@@ -156,7 +212,7 @@ class RaspberryPiSystem:
                 
                 # Send heartbeat every 30 seconds
                 if not self.last_heartbeat or (datetime.now() - self.last_heartbeat).seconds > 30:
-                    self.send_heartbeat()
+                    self.send_heartbeat("online")
                 
                 # Wait for the interval
                 time.sleep(interval)
@@ -168,13 +224,13 @@ class RaspberryPiSystem:
         finally:
             # Send offline status
             try:
-                requests.post(f"{self.api_url}/api/heartbeat", 
-                            json={"device_id": self.device_id, "status": "offline"})
+                self.send_heartbeat("offline")
             except:
                 pass
             
             # Release the video capture and destroy all OpenCV windows
-            cap.release()
+            if cap is not None:
+                cap.release()
             cv2.destroyAllWindows()
 
 # Run the screen capture function
