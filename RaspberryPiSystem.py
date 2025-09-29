@@ -4,6 +4,8 @@ import numpy as np
 from datetime import datetime
 import os
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import json
 import uuid
 import glob
@@ -24,10 +26,41 @@ class RaspberryPiSystem:
         # Create temp directory
         os.makedirs(self.temp_dir, exist_ok=True)
         
+        # Setup requests session with retry strategy
+        self.session = self._setup_requests_session()
+        
         # Clean up temp storage on startup
         self.cleanup_temp_storage()
         
         print(f"Raspberry Pi System initialized with ID: {self.device_id}")
+    
+    def _setup_requests_session(self):
+        """Setup requests session with retry strategy and timeouts"""
+        session = requests.Session()
+        
+        # Define retry strategy
+        retry_strategy = Retry(
+            total=3,  # Total number of retries
+            backoff_factor=1,  # Wait time between retries: {backoff factor} * (2 ^ ({number of total retries} - 1))
+            status_forcelist=[429, 500, 502, 503, 504],  # HTTP status codes to retry on
+        )
+        
+        # Mount adapter with retry strategy
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        
+        return session
+    
+    def check_api_connectivity(self):
+        """Check if API endpoint is reachable"""
+        try:
+            # Try a simple HEAD request with short timeout
+            response = self.session.head(f"{self.api_url}/api/heartbeat", timeout=5)
+            return response.status_code in [200, 404, 405]  # 404/405 means server is reachable
+        except requests.exceptions.RequestException as e:
+            print(f"API connectivity check failed: {e}")
+            return False
     
     def _generate_device_id(self):
         """Generate a unique device identifier"""
@@ -56,8 +89,8 @@ class RaspberryPiSystem:
         
         # Check with server for orphaned images
         try:
-            response = requests.post(f"{self.api_url}/api/cleanup-orphaned", 
-                                  json={"device_id": self.device_id})
+            response = self.session.post(f"{self.api_url}/api/cleanup-orphaned", 
+                                       json={"device_id": self.device_id}, timeout=10)
             if response.status_code == 200:
                 result = response.json()
                 print(f"Server cleanup completed: {result.get('message', 'Unknown')}")
@@ -68,9 +101,15 @@ class RaspberryPiSystem:
     
     def send_heartbeat(self, status="online"):
         """Send heartbeat to API to indicate device status"""
+        # Check API connectivity first
+        if not self.check_api_connectivity():
+            print(f"Cannot send heartbeat - API not reachable")
+            return False
+            
         try:
-            response = requests.post(f"{self.api_url}/api/heartbeat", 
-                                  json={"device_id": self.device_id, "status": status})
+            response = self.session.post(f"{self.api_url}/api/heartbeat", 
+                                       json={"device_id": self.device_id, "status": status}, 
+                                       timeout=10)
             if response.status_code == 200:
                 self.last_heartbeat = datetime.now()
                 if status == "online":
@@ -79,10 +118,21 @@ class RaspberryPiSystem:
                     print(f"Status update sent: {status} at {self.last_heartbeat}")
                 return True
             else:
-                print(f"Heartbeat failed: {response.status_code}")
+                print(f"Heartbeat failed with status code: {response.status_code}")
+                if response.text:
+                    print(f"Response: {response.text}")
                 return False
-        except Exception as e:
+        except requests.exceptions.Timeout:
+            print("Heartbeat error: Request timed out")
+            return False
+        except requests.exceptions.ConnectionError as e:
+            print(f"Heartbeat error: Connection failed - {e}")
+            return False
+        except requests.exceptions.RequestException as e:
             print(f"Heartbeat error: {e}")
+            return False
+        except Exception as e:
+            print(f"Heartbeat error: Unexpected error - {e}")
             return False
     
     def upload_image(self, image_path):
