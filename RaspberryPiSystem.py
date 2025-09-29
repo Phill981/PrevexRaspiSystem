@@ -12,6 +12,7 @@ import hashlib
 class RaspberryPiSystem:
     def __init__(self, device_id=None, api_url="http://c4kgwso4ggcgk44080kc4ooo.157.90.23.234.sslip.io", temp_dir="temp_storage"):
         self.device_id = device_id or self._generate_device_id()
+        self.incrementapi = "http://g04swcgcwsco40kw4s4gwko8.157.90.23.234.sslip.io/vitals/save"
         self.api_url = api_url
         self.temp_dir = temp_dir
         self.last_heartbeat = None
@@ -95,6 +96,9 @@ class RaspberryPiSystem:
             
             if response.status_code == 200:
                 print(f"Image uploaded successfully: {os.path.basename(image_path)}")
+                r = requests.get(self.incrementapi)
+                if r.status_code == 200:
+                    print("Saved")
                 return True
             else:
                 print(f"Image upload failed: {response.status_code} - {response.text}")
